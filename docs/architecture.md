@@ -1,6 +1,10 @@
 # Architecture
 
-**Revised proposal, October 7, 2026.** We will use one Python backend to get Internet AIS, listen to our receiver and choose a position for each vessel. OpenCPN on Linux is our first client. A separate adapter will send additional Internet targets through Cerbo's NMEA 2000 connection. This document describes the planned implementation.
+**First-release design, October 7, 2026.** Implementation and runtime tests await approval.
+
+We are building a Python backend to retrieve Internet AIS - Over The Horizon (OTH) AIS, listen to our receiver and choose a position for each vessel.
+Our first deployment runs the server in Docker on Linux with OpenCPN as a client.
+A separate adapter sends additional OTH targets through Cerbo's NMEA 2000 connection.
 
 ## Shared backend and two outputs
 
@@ -9,7 +13,7 @@ flowchart LR
     HUB[AIS Hub HTTPS] --> CORE[Python backend: observations and selection]
     LOCAL[Local AIS input adapter] --> CORE
     CORE --> TCP[NMEA 0183 TCP output]
-    TCP --> OCPN[OpenCPN on Linux]
+    TCP --> OCPN[OpenCPN]
     CORE --> API[Status and target API]
     CORE --> CAN[NMEA 2000 adapter]
     CAN --> CLIENTS[Axiom, Orca and other N2K consumers]
@@ -28,7 +32,7 @@ The physical transceiver-to-plotter connection stays intact. Local observations 
 
 ## Python package and process boundaries
 
-Deliver a Python 3.11+ package with a Linux console executable, `oth-ais`. The same package runs on desktop Linux and Cerbo's Python runtime. `oth-ais serve` starts the common backend; `oth-ais can-agent` starts the CAN adapter when that output is configured. These commands describe the planned interface.
+We are building a Python 3.11+ package with a Linux console executable, `oth-ais`, and a Docker image for the first Linux deployment. The same package runs on desktop Linux and Cerbo's Python runtime. `oth-ais serve` starts the common backend; `oth-ais can-agent` starts the CAN adapter when that output is configured. These commands define the first-release interface.
 
 | Module | Responsibility |
 | --- | --- |
@@ -77,7 +81,7 @@ The desktop service provides newline-delimited `!AIVDM` sentences over TCP. The 
 
 Use known Class A/B metadata to choose matching position and static messages. Verify every output through independent fixtures and a decoder, including reserved values, units and multi-sentence grouping. Serve a fresh selected snapshot on client connection, then updates; each target revision replaces its queued predecessor. Slow clients are disconnected before they accumulate old positions.
 
-Unknown class needs an explicit encoding choice. **Proposed desktop compatibility option:** encode its position as a gateway-generated Class A-format report while retaining `ais_class: unknown` and `encoding_basis: compatibility` internally. This gives OpenCPN the MMSI and position while its equipment-class display reflects our selected format. Operator configuration must explicitly enable this option; seeking provider class evidence remains the preferred path. The same choice requires owner approval and equipment tests before N2K use. Source timestamps and Internet origin remain visible in the API. Native OpenCPN support for NMEA tag-block time/source metadata needs its own test.
+Unknown class needs an explicit encoding choice. **Desktop compatibility option:** encode its position as a gateway-generated Class A-format report while retaining `ais_class: unknown` and `encoding_basis: compatibility` internally. This gives OpenCPN the MMSI and position while its equipment-class display reflects our selected format. Operator configuration must explicitly enable this option; seeking provider class evidence remains the preferred path. The same choice requires owner approval and equipment tests before N2K use. Source timestamps and Internet origin remain visible in the API. Native OpenCPN support for NMEA tag-block time/source metadata needs its own test.
 
 The encoder preserves real MMSIs and names. Unknown radio-state fields use specified unavailable values. Wire encoding never reconstructs a purported original radio report from undocumented fields. Emission is strictly local software/network output; community contribution uses independently received radio sentences.
 
@@ -117,7 +121,7 @@ Desktop tests use a virtual CAN interface and an independent decoder. Cerbo test
 
 ## Resource and failure containment
 
-These initial configurable limits are proposals to measure during implementation:
+We start with these configurable limits and measure them during implementation:
 
 | Resource | Initial bound or behavior |
 | --- | --- |
@@ -135,7 +139,7 @@ These initial configurable limits are proposals to measure during implementation
 | Storage | RAM target state, small atomic configuration/rate-limit records and logs capped at 10 MiB |
 | Recovery | Bounded retry/backoff; configuration/authentication failures wait for correction; crash loops stop with a clear incident |
 
-Measure imported libraries and maximum-workload allocations before fixing production budgets. Use enforced OS/cgroup limits where supported by the actual Venus image; an external supervisor detects a blocked process. A low-priority/OOM policy should select OTH ahead of electrical services during pressure. Reserve exact host-level changes for deployment approval.
+Measure imported libraries and maximum-workload allocations before fixing production budgets. Use enforced OS/cgroup limits where supported by the actual Venus image; an external supervisor detects a blocked process. The low-priority/OOM policy selects OTH ahead of electrical services during pressure. Reserve exact host-level changes for deployment approval.
 
 If local-suppression capacity fills, pause remote publication before evicting evidence needed to protect local vessels. Catch input/decode failures at adapter boundaries; treat invalid records separately from transport loss. Drain/close clients, revoke output leases and stop CAN sending on graceful shutdown. Process death expires output through the adapter lease or stops the adapter itself.
 

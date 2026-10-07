@@ -1,13 +1,15 @@
 # Implementation plan
 
-**Revised proposal, October 7, 2026; awaiting approval.** We will first get the Python service working with OpenCPN on Linux. Then we will run the same backend on Cerbo, measure its workload and test its NMEA 2000 output with the navigation equipment turned on aboard.
+We are building the Python service for OpenCPN on Linux, with Docker as the first deployment.
+The second phase runs the same backend on Cerbo, measures its workload and tests its NMEA 2000 output with the navigation equipment turned on aboard.
+In a later release, we will move the backend to a standalone RISC boat computer with Signal K and NMEA 2000 support. We may keep the N2K module on Cerbo and use its marine connection; we will decide that during the later migration.
 
 ## Deliverables and order
 
 | Delivery | Result |
 | --- | --- |
 | Python backend | Regional AIS Hub acquisition, typed observations, local reception, source selection, bounded lifecycle and status API |
-| Linux/OpenCPN release | Installable `oth-ais` console executable providing an AIS TCP input to OpenCPN |
+| Linux/OpenCPN release | Installable `oth-ais` console executable and Docker image providing an AIS TCP input to OpenCPN |
 | N2K adapter | Python marine receive/output module with independent final suppression and publication leases |
 | Cerbo deployment | Reproducible ARMv7 installation, supervision, resource limits and recovery |
 | Boat commissioning | Proven transmission through Cerbo and target consumption by Axiom+, Orca Core 2 and any additional tested client |
@@ -16,7 +18,7 @@ Selection rules and default limits have one authority: [Architecture](architectu
 
 ## 1. Core and provider contract
 
-Create a typed Python package with separate provider, selection, input and output modules. Ship the planned `oth-ais serve --config ...` entry point with strict configuration, private credential loading, clocks and structured status. Use established protocol and HTTP libraries.
+Create a typed Python package with separate provider, selection, input and output modules. Ship the first-release `oth-ais serve --config ...` entry point with strict configuration, private credential loading, clocks and structured status. Use established protocol and HTTP libraries.
 
 Inspect a bounded actual account response through the account-wide request limiter. Record response fields, timestamp semantics, class metadata, unavailable-value encoding and access/contribution terms. Keep raw vessel locations and account details in private evidence. Provider queries use a fixed test area initially, so live boat navigation is optional for this stage.
 
@@ -35,7 +37,7 @@ Complete when the backend runs on Linux, its tests pass and a private live API s
 
 ## 2. First working OpenCPN release
 
-Implement NMEA 0183 AIS output with `pyais`, following [OpenCPN testing](opencpn-testing.md). Deliver the Linux executable, dependency-locked installation, desktop config example and start/stop/status commands.
+Implement NMEA 0183 AIS output with `pyais`, following [OpenCPN testing](opencpn-testing.md). Deliver the Linux executable, Docker image, dependency-locked installation, desktop config example and start/stop/status commands.
 
 Provide a merged stream for OpenCPN when the backend is its AIS source. Supplemental mode supports clients with direct local AIS reception and a backend local-monitor input. Client connections receive fresh selected snapshots and subsequent revisions. Bounded per-client queues coalesce updates and close stalled clients.
 

@@ -1,6 +1,6 @@
 # Local AIS coexistence
 
-**Proposed behavior, October 7, 2026.** We identify each vessel by its MMSI and keep its local and Internet observations separately. While local AIS has a recent position, we use it. If we lose that position feed, we want to keep showing the vessel through a fresh Internet report. This document describes when we change source and how we handle the return of local reception.
+**First-release source-selection rules, October 7, 2026.** We identify each vessel by its MMSI and keep its local and Internet observations separately. While local AIS has a recent position, we use it. If we lose that position feed, we want to keep showing the vessel through a fresh Internet report. The rules below govern when we change source and how we handle the return of local reception.
 
 ## Receive once, select once
 
@@ -79,7 +79,7 @@ Depth and wind can keep arriving while the AIS receiver is missing. We therefore
 
 Keep separate status for the CAN interface, receiver condition, monitoring connection and number of local vessels. Zero vessels can be normal open water. A failed receiver permits fresh Internet fallback; a lost monitoring connection permits fallback through the per-vessel timers. The absence of local AIS stays visible to the operator while Internet tracking continues.
 
-During a monitoring failure, the physical receiver may still be reporting vessels to the displays. Supplemental Internet positions can therefore overlap native reports until monitoring recovers. We accept that possibility to retain fresh vessel information and will test the displays' handling of it. The service's API identifies Internet fallback and the monitoring problem; native display source labels require their own device test.
+During a monitoring failure, the physical receiver may still be reporting vessels to the displays. Supplemental Internet positions can therefore overlap native reports until monitoring recovers. We accept that possibility to retain fresh vessel information. Our onboard tests check how each display handles the overlap. The service's API identifies Internet fallback and the monitoring problem; native display source labels require their own device test.
 
 Malformed records are rejected individually. If reception can no longer be decoded reliably, report monitoring as unavailable and use the fallback rules. A broken transmit interface, expired backend lease, unresolved gateway identity, detected forwarding loop or corrupt selection state stops marine output. Those faults affect our ability to send valid reports. Capacity handling preserves unexpired local-priority state. If state tracking loses integrity, stop uncertain publication and report the cause.
 

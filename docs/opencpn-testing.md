@@ -1,10 +1,10 @@
 # OpenCPN development and testing
 
-**Planned workflow, October 7, 2026.** The first implementation delivers a Linux executable that serves AIS directly to OpenCPN. The commands below specify the intended interface; implementation and runtime results await approval.
+**First-release test workflow, October 7, 2026.** The Linux executable serves AIS directly to OpenCPN. The commands below define its interface. Implementation awaits approval; runtime tests remain unperformed.
 
 ## Desktop setup
 
-Install the dependency-locked Python package into a dedicated environment. Its `oth-ais` executable runs the common backend with a private credential file, a fixed geographic query area and the TCP output enabled. Leave the marine transmitter disabled during desktop use.
+Our first deployment uses Docker on Linux. The same dependency-locked Python package also installs into a dedicated environment. Its `oth-ais` executable runs the common backend with a private credential file, a fixed geographic query area and the TCP output enabled. Leave the marine transmitter disabled during desktop use.
 
 ```sh
 oth-ais serve --config desktop.toml

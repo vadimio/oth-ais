@@ -1,127 +1,118 @@
 # Implementation plan
 
-**Awaiting design approval, October 7, 2026.** Deliver regional Internet traffic first, then qualify plotter delivery with the existing AIS equipment operating throughout.
+**Revised proposal, October 7, 2026; awaiting approval.** Build one Python backend with a Linux executable, prove it with OpenCPN, then deploy the same service to Cerbo and verify physical N2K output aboard.
 
-## Decisions for approval
+## Deliverables and order
 
-| Decision | Recommendation |
+| Delivery | Result |
 | --- | --- |
-| Initial hosting | Trial a lightweight Python service on Cerbo; retain the option to move to a dedicated fanless Linux server |
-| Initial useful release | Authenticated LAN targets with local/Internet source labels, age and source health |
-| Navigation output | Implement a separately enabled publisher; qualify actual plotter provenance and duplicate handling before live use |
-| Near-vessel policy | Keep Internet output outside a proposed 25 nm protected radius; local-MMSI priority everywhere |
-| Missing class information | Seek provider clarification/raw-message metadata; keep unknown-class observations in the LAN view |
-| Community contribution | Opt in after mobile-station acceptance, privacy consent and receiver-output qualification |
+| Python backend | Regional AIS Hub acquisition, typed observations, local reception, source selection, bounded lifecycle and status API |
+| Linux/OpenCPN release | Installable `oth-ais` console executable providing an AIS TCP input to OpenCPN |
+| N2K adapter | Python marine receive/output module with independent final suppression and publication leases |
+| Cerbo deployment | Reproducible ARMv7 installation, supervision, resource limits and recovery |
+| Boat commissioning | Proven transmission through Cerbo and target consumption by Axiom+, Orca Core 2 and any additional tested client |
 
-The defaults and failure rules have one authority: [Architecture](architecture.md). Configuration references that policy rather than duplicating thresholds throughout the implementation.
+Selection rules and default limits have one authority: [Architecture](architecture.md). The [local coexistence design](local-ais-coexistence.md) explains why and when local reception takes priority. Network/router and legacy-plotter Ethernet work stay deferred.
 
-## 1. Provider and equipment qualification
+## 1. Core and provider contract
 
-Deliver a concise qualification report with redacted evidence.
+Create a typed Python package with separate provider, selection, input and output modules. Ship the planned `oth-ais serve --config ...` entry point with strict configuration, private credential loading, clocks and structured status. Use established protocol and HTTP libraries.
 
-- Confirm account access, permitted regional queries, coverage, timestamp meaning and mobile-station contribution requirements
-- Request the provider's AIS-class/original-message metadata options and clarify unavailable-speed sentinels
-- Measure payload sizes and errors using the account-wide request limiter
-- Inventory local receiver NAME, model, raw-output options, source forwarding and target PGNs
-- Establish trusted own-vessel GPS selection and fix-validity behavior
-- Identify exact plotter models, firmware, accepted AIS PGNs, source-selection controls and stale-target handling
-- Check Cerbo runtime, supervisor, TLS trust, memory, CPU, navigation CAN state and charging-service baseline
+Inspect a bounded actual account response through the account-wide request limiter. Record response fields, timestamp semantics, class metadata, unavailable-value encoding and access/contribution terms. Keep raw vessel locations and account details in private evidence. Provider queries use a fixed test area initially, so live boat navigation is optional for this stage.
 
-Exit: provider contract recorded, input identities known, and a bounded first-release workload selected. Retain uncertainty about Internet coverage explicitly. Vessel locations and account responses stay private.
+Implement:
 
-## 2. Read/display release
+- Regional requests and a restart-aware, account-wide minimum polling interval
+- Bounded compressed/decompressed parsing, field counts and allocations
+- Separate local/provider observations, expiry, target revisions and local-MMSI reservations
+- An authenticated target/status API exposing selected source, age and suppression reasons
+- Normal/economy/disabled controls with measured data counters
+- Graceful cancellation, retry/backoff, incident logs and observable resource limits
 
-Implement a Python package with small domain modules: observation types, provider adapter, local input, target selection, expiry, status and deployment tooling. Add a concise API/schema only after inventorying existing consumers. Use mature HTTP and parsing libraries where they reduce failure-prone plumbing.
+Tests use synthetic positions and clocks: malformed/empty envelopes, duplicates, missing fields, sentinel values, out-of-order observations, future timestamps, UTC jumps, date-line areas, decompression limits and account throttling through restart.
 
-Deliver:
+Complete when the backend runs on Linux, its tests pass and a private live API sample establishes the deployed provider contract. Class metadata and an explicit compatibility-encoding choice are separate recorded decisions.
 
-- Strict configuration and private credential-file validation
-- Persistent account-wide rate-limit state, with a conservative startup wait and bounded retry/backoff
-- Regional queries, timestamp-preserving normalization and bounded response handling
-- One selected target per MMSI, alongside inspectable per-source evidence
-- An authenticated LAN endpoint and a source-aware traffic view or existing chart-viewer integration
-- Normal/economy/disabled controls, data counters and human-readable incident notices
-- Reproducible ARMv7/ARM64/x86 Linux packaging and versioned configuration
+## 2. First working OpenCPN release
 
-Tests cover encoded units, missing fields, malformed envelopes, sentinel values, duplicates, out-of-order data, future time, clock jumps, stale GPS, empty results, date-line bounds, oversized gzip data, local priority and account-rate compliance through restart. All fixtures use synthetic vessels and locations.
+Implement NMEA 0183 AIS output with `pyais`, following [OpenCPN testing](opencpn-testing.md). Deliver the Linux executable, dependency-locked installation, desktop config example and start/stop/status commands.
 
-Exit: offline tests pass and a read-only Cerbo trial meets the documented resource/coexistence budgets. Installing that trial requires a deployment approval; its CAN transmitter remains disabled.
+Provide a merged stream for OpenCPN when the backend is its AIS source. Supplemental mode supports clients with direct local AIS reception and a backend local-monitor input. Client connections receive fresh selected snapshots and subsequent revisions. Bounded per-client queues coalesce updates and close stalled clients.
 
-## 3. Contribution adapter
+Verify in actual OpenCPN:
 
-Implement checksum-verified received-sentence forwarding with a short, bounded queue, byte counters and an explicit enable control. Reuse the receiver's raw output when available. Separate receiver-origin data from Internet data structurally, including provenance checks at the upload boundary.
+1. Real Internet targets appear at the provider coordinates with correct speed/course and available static fields
+2. A synthetic local replay for the same MMSI replaces the Internet-selected observation
+3. Subsequent Internet updates leave the locally selected position unchanged
+4. Quiet-period release uses a newly fetched fresh provider position
+5. Provider outage/expiry stops output, with OpenCPN's lost/remove behavior measured
+6. Slow/disconnected clients recover through fresh snapshots and bounded memory
+7. Unknown-class compatibility encoding and any supported source/time tag blocks have their display consequences recorded
 
-Tests prove that provider data, gateway echoes, own-vessel reports, malformed sentences and unsupported commands produce zero uploaded records. Reconnect tests verify old queued reports are discarded. Provider feedback confirms a usable mobile feed and continued access terms.
+Synthetic replay reaches only the local desktop connection or virtual CAN test network. Keep OpenCPN route/autopilot output disabled on this connection.
 
-Exit: an approved private upload configuration, consent record and provider acceptance. Schedule this phase earlier if account access requires an active contribution feed.
+Complete when the Linux executable serves OpenCPN and these observations have a saved test record. Automated decoding alone establishes encoding evidence; actual OpenCPN rendering completes this stage.
 
-## 4. Marine publisher and bench tests
+## 3. Local reception and N2K adapter
 
-Select and pin the reviewed NMEA 2000 stack. Implement a small marine adapter with explicit interface selection, stable device identity, a narrow PGN allowlist, output leases and send-time revalidation. Cross-check its frames through an independently implemented decoder. Retain dependency notices and an SBOM.
+Prefer the existing Python `python-can`/`nmea2000` foundations. Audit and pin the encoder, `N2KDevice` address-claim wrapper, send framing, management behavior and allocation limits. Keep dependency versions isolated from existing boat services. A tested established alternative can occupy the same adapter boundary if these checks fail.
 
-Tests cover:
+Implement `oth-ais can-agent`, its typed Unix-socket contract and the single CAN receive path used by local target tracking and final output checks. Monitor approved receiver NAME/address changes, distinguish VHF-received from own/gateway reports and qualify a receiver-health signal.
 
-1. Known Class A/B targets, missing values, dimensions and motion units
-2. Fast-packet assembly, sequence rollover, dropped frames and address changes
-3. Unique NAME arbitration and startup with occupied addresses
-4. Same-MMSI arrival from VHF immediately cancelling remote output
-5. Target age expiry while queued and duplicate snapshots preserving age
-6. Lost GPS, receiver input, Internet, process link and core process
-7. Unknown receiver identity, wrong interface/bitrate and CAN error state
-8. Queue saturation, publication budgets, memory pressure and storage failure
-9. Process restart, stale disk cache and overlapping-host migration
-10. Separation from BMS, charging, autopilot, own-GNSS and RF transmit commands
+Virtual-CAN tests cover:
 
-Begin with virtual CAN and private replays. Move to an isolated, powered display bench for actual plotter rendering, target expiry, source presentation and alarms. Synthetic MMSIs stay inside virtual or physically isolated test networks.
+1. Correct Class A/B position/static PGNs, unavailable fields and independent decoding
+2. Unique identity/address claiming, occupied addresses, source-address changes and management-rate limits
+3. Fast-packet grouping, incomplete frames, sequence rollover and bounded reassembly
+4. Same-MMSI local arrival cancelling both remote position and static queues
+5. Local arrival during backlog or a multi-frame send, with the residual in-flight bound recorded
+6. Gateway echoes, multiplexed inputs, own-vessel reports and conflicting data
+7. Expiry, clock uncertainty, local-monitor loss, GPS loss and broken backend lease
+8. Queue saturation, suppression-state saturation, CPU/RAM pressure and crash loops
+9. Restart, missing state storage and overlapping-process identity/account locks
+10. Interface/PGN restrictions preserving BMS, charging and autopilot behavior
 
-Exit: a completed compatibility report for each display. A failed provenance/handover test keeps that display on the source-aware LAN-view route.
+Complete when frame/selection tests pass, the dependency audit is recorded and protocol output is independently verified. Axiom and Orca consumption stay pending their equipment tests.
 
-## 5. Supervised boat commissioning
+## 4. Cerbo deployment preparation
 
-Prepare immutable pre-change configuration exports, the exact signed/hashed installation artifact, a rollback command and a post-change record. Keep charging and native AIS baselines visible to the operator.
+Build the same package for the observed Cerbo Python/ARMv7 runtime. Prepare an immutable installation artifact, dependency hashes, private configuration, independent supervision, explicit enabled outputs and rollback. Preserve any pre-change files and record installed bytes/version afterward.
 
-| Live check | Required observation |
+With deployment approval, verify imports, console startup, API/TCP availability, supervisor recovery and CPU/RAM/storage limits on Cerbo. Gather an electrical-service baseline and compare it during maximum OTH workloads. The CAN adapter starts in passive receive mode, using available navigation data without writing management or AIS frames.
+
+A powered-down navigation network produces a clear unavailable-input status. Its physical transmit/rendering checks remain scheduled for the boat visit in roughly three weeks. Desktop/OpenCPN testing can continue throughout.
+
+Complete when the service installs and runs within measured budgets, with recovery observed and hardware-transmission checks explicitly pending.
+
+## 5. Powered-network boat commissioning
+
+Keep the existing receiver and plotter wiring intact. Prepare the package/version evidence, interface/source inventory, supported-client list, stop command and an operator-visible state summary. Inspect the existing navigation CAN error state after powering the network; preserve bitrate and unrelated interfaces.
+
+Use one supervised session with the following distinct observations:
+
+| Check | Evidence |
 | --- | --- |
-| Receive-only startup | Correct GPS and local AIS identity; unchanged electrical telemetry/watchdog health |
-| Bounded real-target publication | A qualified remote target appears with its actual MMSI and reviewed source/age behavior |
-| Local handover | A chosen real MMSI changes from remote to local while the local sensor path remains intact |
-| Expiry and Internet outage | Gateway stops expired output; display loses or clearly ages the remote entry within the measured interval |
-| Core/adapter stop | Output stops within its lease deadline; local equipment remains usable |
-| Restart and recovery | A fresh session qualifies sources and time before output resumes |
-| Contribution | Provider receives only approved local radio reception; bandwidth counters agree |
+| Passive startup | Approved AIS receiver identity and real local targets; trusted own-position and healthy electrical services |
+| Controlled write through Cerbo | Actual AIS frames reach the physical N2K bus from the intended adapter identity |
+| Axiom+ and Orca | Each device displays expected MMSI/position/static fields; source/age/encoding behavior recorded separately |
+| Local handover | A real locally received MMSI owns the native path and ceases supplemental publication |
+| Outage and expiry | Remote output stops and each display's cached-target behavior is measured |
+| Backend/adapter failure | Publication stops within the lease/send bound while native AIS continues |
+| Restart and recovery | Fresh source/time state precedes output; address/account ownership remains unique |
+| Resource soak | CPU/RAM/network/bus budgets hold alongside normal boat services |
 
-Run one combined scripted failure session where it can establish several properties with fewer interruptions. Mark each result as observed, failed or unperformed. Maintain separate evidence for each safety property.
+Use physically isolated replay for synthetic vessel tests. Mark every check observed, failed or unperformed. A successful write proves the transport; consumption/expiry/handover require the corresponding client observations.
 
-Exit: owner reviews the results and explicitly enables live output. Establish a monitored soak period before relying on persistent operation. Stop OTH services as the first rollback action; the native transceiver wiring remains intact.
+Complete when the owner reviews the results and enables ongoing marine output. Rollback stops OTH processes while native AIS remains connected.
 
-## 6. Dedicated-server migration and integrations
+## 6. Optional contribution and later migration
 
-Move fetching, selection and display to the boat's dedicated Linux server once it is installed. Retain the qualified CAN adapter or use a tested dedicated gateway. Add mutually authenticated transport, clock-skew tests and single-publisher handover.
+Confirm mobile-feed acceptance, data rights and API entitlement with AIS Hub. Qualify a genuine receiver-output path before enabling contribution. Test that Internet records, gateway echoes, own-vessel reports and configuration commands produce zero uploaded records. Discard old outage backlog and record uploaded bytes.
 
-Optional integrations:
+Move the unchanged Python backend to a dedicated boat server later if useful. Cerbo may retain the CAN adapter, with authenticated cross-host transport, bounded clock skew, local final checks and one active publisher. Optional Home Assistant/Signal K consumers use the common API.
 
-- Source-labelled Signal K target observations
-- A Home Assistant summary and link to the traffic view
-- Compatible chart viewers using approved nautical/satellite layers
-- Privacy-controlled regional sharing or additional provider adapters
+## Review and evidence
 
-Keep charts and AIS transport independently versioned. Native plotter chart admission and E120/Axiom Ethernet migration stay owned by their respective projects.
+CI checks typing, lint, synthetic unit/replay tests, both encodings, queue bounds, dependency/license notices and secret exclusion. Keep modules domain-focused and readable, with docstrings for source authority, clocks and lifecycle choices. Preserve actual equipment results in commissioning records.
 
-## Maintainability and release checks
-
-Use typed Python boundaries, pure selection rules, docstrings explaining policy choices and domain-focused modules below 500 lines. CI runs unit/replay tests, typing, lint, dependency review, secret scanning and an artifact reproducibility check. Hardware evidence belongs in a separate commissioning report.
-
-Release documentation covers supported inputs/displays, credential provisioning, resource budgets, data rights, upgrade/rollback and operator-visible failure states. Public issues contain redacted evidence. Live coordinates, vessel identifiers and provider keys remain private.
-
-## Remaining approval risks
-
-1. The documented AIS Hub schema leaves AIS class unknown for many targets
-2. Plotters may collapse source provenance and give delayed positions a fresh receipt time
-3. Cached remote entries can survive after the gateway stops sending
-4. Local-receiver monitoring must distinguish silence, healthy zero targets and forwarding loops
-5. Cerbo CAN transmission adds a custom-service maintenance and host-isolation responsibility
-6. Provider contribution terms may constrain mobile feeds, sampling and access continuity
-7. Variable terrestrial coverage leaves some offshore areas sparse or empty
-8. Legacy/modern plotter Ethernet compatibility requires a separate network design
-
-The first release can provide useful LAN traffic awareness while these plotter-output questions are resolved.
+The review distinguishes provider schema evidence, Linux/OpenCPN behavior, Cerbo installation/resource evidence, physical CAN transmission and each client's consumption. Runtime and hardware results remain unperformed until observed. Each later deployment/change retains the corresponding owner approval.

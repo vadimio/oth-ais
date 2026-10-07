@@ -1,200 +1,164 @@
 # Architecture
 
-**Proposed design, October 7, 2026.** The first release provides Internet traffic awareness on the boat LAN. NMEA 2000 publication is a separately commissioned capability.
+**Revised proposal, October 7, 2026.** One Python backend retrieves Internet AIS, listens to local AIS and selects observations. OpenCPN is the first working client on Linux. A separate output adapter publishes eligible Internet targets through Cerbo's NMEA 2000 connection. Implementation awaits approval.
 
-## Operating model
-
-The existing AIS transceiver continues receiving nearby vessels and supplying the plotters directly. OTH AIS adds positions obtained through the Internet. A separate copy of each vessel's local and Internet observations preserves their origin, age and differences. Selection happens by Maritime Mobile Service Identity (MMSI), the vessel's radio identifier.
-
-The recommended initial host is a Cerbo GX with an existing navigation CAN connection and measured spare capacity. A small Python service handles provider requests and target selection. A marine adapter handles navigation input and, after approval, NMEA 2000 output. Moving the Python service to a dedicated Linux server later preserves the same contracts.
-
-## Independent data paths
+## Shared backend and two outputs
 
 ```mermaid
 flowchart LR
-    VHF[Local AIS transceiver] --> BUS[NMEA 2000 backbone]
-    BUS --> PLOT[Compatible plotter]
-    BUS --> RX[Navigation receive adapter]
-    RX --> CORE[OTH AIS selection]
-    HUB[AIS Hub] --> FETCH[Bounded HTTPS fetch]
-    FETCH --> CORE
-    CORE --> LAN[Authenticated LAN traffic view]
+    HUB[AIS Hub HTTPS] --> CORE[Python backend: observations and selection]
+    LOCAL[Local AIS input adapter] --> CORE
+    CORE --> TCP[NMEA 0183 TCP output]
+    TCP --> OCPN[OpenCPN on Linux]
+    CORE --> API[Status and target API]
+    CORE --> CAN[NMEA 2000 adapter]
+    CAN --> CLIENTS[Axiom, Orca and other N2K consumers]
 ```
 
-The native transceiver-to-plotter path operates independently of OTH AIS. Its wiring and power stay intact. The optional publisher emits eligible remote targets only. Local targets already travel through the native path.
+The backend owns provider requests, normalized records, source priority, target expiry and status. Output adapters consume that same internal model. Only the N2K adapter needs a CAN interface. Linux desktop testing uses an explicitly configured geographic area and optional replayed local reception; it can operate while the boat's navigation equipment is off.
 
-Optional publication connects to the same backbone after qualification:
-
-```mermaid
-flowchart LR
-    CORE[Selected remote observation] --> GATE[Age and local-source checks]
-    GATE --> TX[Optional NMEA 2000 publisher]
-    TX --> BUS[NMEA 2000 backbone]
-    BUS --> PLOT[Compatible plotter]
-```
-
-Contribution uses a separate, one-way path:
-
-```mermaid
-flowchart LR
-    RADIO[Receiver-origin AIS sentences] --> CHECK[Checksum and provenance checks]
-    CHECK --> LIMIT[Bounded upload queue]
-    LIMIT --> UP[Provider-assigned UDP destination]
-```
-
-## Service boundaries
-
-| Component | Responsibility | Authority |
+| Consumer | Output policy | Reason |
 | --- | --- | --- |
-| Provider adapter | HTTPS requests, account-wide rate limiting, schema validation and normalization | Outbound provider access |
-| Navigation adapter | Own-vessel position, device identities and locally received AIS | Read navigation CAN or a receiver-output connection |
-| Target store and selection | Separate observations, expiry, duplicate suppression and output eligibility | In-memory target state |
-| LAN interface | Traffic records, source health, ages and operator controls | Authenticated read access; authorized configuration changes |
-| Marine publisher | Final eligibility checks, address claiming, packet encoding and bounded transmission | Approved navigation interface and allowed AIS PGNs |
-| Contribution adapter | Forward genuine receiver-origin sentences with a bandwidth budget | Assigned provider-upload destination |
+| OpenCPN using this service as its AIS input | One merged stream: locally received observation preferred, otherwise eligible Internet observation | One target per MMSI through a single selected feed |
+| OpenCPN with a separate direct local-AIS connection | Supplemental Internet-only stream, with backend local monitoring enabled | Preserve direct reception and suppress overlapping Internet reports |
+| Existing NMEA 2000 backbone | Supplemental Internet-only AIS reports | The physical AIS receiver already delivers locally received targets |
+| Target/status API | Selected observation plus separate source records, timestamps and suppression reason | Explain why a target appears, changes source or expires |
 
-Each input/output boundary has a typed contract. Selection and expiry are pure, clock-injected functions tested independently of network and hardware. Provider-specific fields stay inside their adapter.
+The physical transceiver-to-plotter connection stays intact. Local observations correct the backend's selected view; their position and static reports remain on their existing native N2K path. Every MMSI has separate local and provider records, preserving the origin of each observation.
 
-A single navigation adapter supplies the local-target and own-position stream to all OTH components. Existing navigation collectors can consume the same normalized stream later. Reuse proven decoding and capture mechanisms through a small extraction or adapter; keep charging services independently deployed.
+## Python package and process boundaries
 
-## AIS Hub access
+Deliver a Python 3.11+ package with a Linux console executable, `oth-ais`. The same package runs on desktop Linux and Cerbo's Python runtime. `oth-ais serve` starts the common backend; `oth-ais can-agent` starts the CAN adapter when that output is configured. These commands describe the planned interface.
 
-Use HTTPS JSON regional queries with encoded-unit records, gzip responses and the provider's position-age filter. One account-wide limiter schedules requests at least 65 seconds apart, including retries and diagnostic queries. One active fetcher owns each account, including during host migration. A regional bounding box follows a fresh, trusted own-vessel position; exact distance filtering happens locally. Boundary splitting across the date line shares the same request budget. An explicitly configured fixed area supports LAN-only queries while vessel instruments are powered down.
-
-The [provider contract](https://www.aishub.net/api) limits access to once a minute. Its age filter describes returned positions. `TIME` supplies the provider timestamp, and `TYPE` describes vessel type. The documented fields omit AIS class and original radio message ID. Actual account responses and timestamp semantics require qualification before output is enabled.
-
-API account details enter through a private credential file. HTTPS certificate verification stays enabled. Logs redact credential-bearing query strings, response account identifiers and request-library exceptions containing URLs. Redirects require an approved provider host.
-
-## Observations and time
-
-Each position observation carries:
-
-| Field group | Required content |
+| Module | Responsibility |
 | --- | --- |
-| Identity | MMSI, source kind, provider or receiver identity, source device NAME when available |
-| Time | Provider/receiver timestamp, UTC receipt time, monotonic receipt time and timestamp semantics |
-| Motion | Latitude/longitude in degrees, SOG in m/s, COG/heading in radians, each with validity |
-| Provenance | Original AIS class/message type when verified, class-evidence source and age |
-| Static data | Name, callsign, dimensions, vessel type and separately timestamped metadata |
-| Lifecycle | Generation, expiry deadline and exclusion reason |
+| `models` and `selection` | Typed observations, source authority, clocks, expiry and per-target revision |
+| `providers.aishub` | Regional HTTPS requests, account rate limit, bounded parsing and field normalization |
+| `inputs` | Approved local NMEA 0183, N2K and replay inputs; own-position and receiver-health observations |
+| `outputs.opencpn` | NMEA 0183 AIS encoding, TCP clients and per-client backpressure |
+| `api` | Authenticated target details, status and validated operator settings |
+| `n2k` | Local CAN receive, identity/address claiming, final suppression checks and allowed AIS output |
+| `runtime` | Configuration, supervised lifecycle, resource budgets and structured incident logs |
 
-NMEA 2000 device NAME is the stable 64-bit device identity; its source address can change after reboot or address arbitration. Receiver identity follows NAME and an approved device inventory. The marine adapter supplies receipt timestamps and a qualified receiver-liveness signal alongside observations. Gateway-origin frames are identified by NAME and kept separate from receiver-origin data.
+Use `asyncio` for the backend and mature HTTP/server libraries such as `aiohttp`. Use [pyais](https://github.com/M0r13n/pyais) for AIS sentence encoding/decoding. The preferred N2K foundation is [python-can](https://python-can.readthedocs.io/) with [nmea2000](https://github.com/tomer-w/nmea2000), whose upstream `N2KDevice` supports address claiming and structured sending. Existing boat collection already uses these Python decoding/transport libraries. Pin and test the exact release, including AIS encoding, resource bounds and device lifecycle.
 
-Normalization retains unknown values explicitly. It rejects invalid coordinates, malformed MMSIs, nonfinite numbers and implausible future timestamps. Sentinel tests cover provider and radio-specification differences, including unavailable speed encodings. An absent heading or rate of turn remains unknown. Static metadata can survive a position expiry with its own age.
+Keep the CAN adapter in its own supervised process, connected to the core by a versioned, bounded Unix-socket protocol. It retains local-MMSI reservations and final age checks beside the physical interface. A slow provider request or backend crash expires its publication lease. Library support remains subject to independent protocol tests; alternative established N2K stacks can implement the same adapter contract if needed.
 
-UTC determines reported position age. Monotonic time governs timers and leases. A significant UTC clock jump disables remote publication until time is qualified again. Duplicate snapshots preserve the original age. Cached positions keep their source timestamp through restart and remain ineligible until fresh observations establish a new session.
+Python packaging includes dependency hashes and the target-specific wheels needed on ARMv7, ARM64 and x86-64. Native dependencies, including `orjson` required by the candidate N2K library, need a compatible Cerbo wheel or a verified existing runtime import. Install into a separate service environment so existing electrical/navigation dependencies keep their versions.
 
-## Local AIS priority
+## Internal observations
 
-1. Keep observations separately under `(MMSI, source)` and render one selected vessel entry
-2. Prefer an observed local VHF target while its local reservation remains active; show the observation's actual age
-3. Reserve each locally seen MMSI for 15 minutes, accommodating slow stationary reports and short reception gaps
-4. Stop queued Internet publication for that MMSI immediately when a local report arrives
-5. Admit Internet targets to NMEA 2000 only with healthy local-receiver monitoring, a trusted own-position fix, verified class evidence and a fresh position
-6. Exclude own-vessel MMSI and specialized identities such as AIS-SART, MOB, aircraft, base stations and aids to navigation from initial remote output
-
-The LAN view can show the suppressed Internet observation in a details panel. Device disappearance, an unknown local-AIS sender or a broken local monitoring stream suspends Internet CAN output. Displaying zero local targets requires a healthy receiver observation path.
-
-A target entering local range already has a remote entry on some plotters. Ceasing our transmission removes future interference; the plotter controls its cached entry and source handover. A commissioning test must prove its treatment of the same MMSI from both sources. Successful server-side selection alone establishes only our output behavior.
-
-## Proposed policy defaults
-
-These are initial commissioning choices, subject to approval and measured coverage.
-
-| Setting | Proposal | Reason |
-| --- | --- | --- |
-| Provider polling | 65 seconds; 5 minutes in economy profile | Provider rate margin and optional energy/data savings |
-| Search radius | 100 nautical miles | Regional traffic awareness |
-| Remote CAN exclusion radius | 25 nautical miles around own vessel | Preserve the close-quarters picture for local sensors |
-| Remote position age for CAN | At most 180 seconds | Bound delayed plotter positions |
-| LAN fresh/stale display | Fresh through 180 seconds; stale until 10 minutes, then removed | Keep age visible during Internet interruptions |
-| Local-MMSI reservation | 15 minutes | Protect slow reports and short receive gaps |
-| Target bounds | 2,000 normalized records; at most 100 remote CAN targets | Bound memory and plotter congestion |
-| Provider response bounds | 2 MiB compressed; 8 MiB decompressed | Bound download and decompression work |
-| Publication budget | At most 2 AIS PGNs/second and 20 CAN frames/second; small burst allowance | Bound incremental bus traffic, including fast packets |
-| Publisher lease | At most 15 seconds, renewed from fresh core decisions | Stop after controller/process communication loss |
-| CAN transmission | Disabled until commissioning | Separate design approval from live activation |
-| Community upload | Disabled until consent and provider acceptance | Preserve privacy and feed provenance |
-
-The protected radius is a separation measure. Delayed positions can still produce misleading closest-point-of-approach calculations. Each plotter needs a documented Internet-source presentation and alarm behavior before shared-backbone publication.
-
-## NMEA 2000 output qualification
-
-Use an established NMEA 2000 stack for address claiming, fast packets, device information and field encoding. Timo Lappalainen's C++ library and its Linux SocketCAN driver are candidates. Pin reviewed revisions, retain their licenses and validate them against an independent decoder. Library selection remains an implementation decision after dependency review.
-
-Known Class A reports map to PGN 129038 and, where supported, static/voyage PGN 129794. Known Class B reports map to PGN 129039 and supported static PGNs 129809/129810. Missing fields use their specified unavailable representation. Rate-of-turn conversion uses its documented nonlinear encoding. Original radio communication-state fields remain unknown when the provider supplies a normalized record.
-
-AIS Hub's vessel-type field describes the vessel's use. Obtain radio-class evidence from a qualified raw-message feed or separately verified metadata. Records with unknown class remain available in the LAN view. PGN 129813, the long-range report, is an alternative research candidate: its format and actual plotter support require separate qualification, and its radio-message semantics constrain eligible station types.
-
-**The main remaining constraint is provenance on the plotter.** Standard AIS position PGNs carry limited time information, and displays can treat newly received old data as current. A distinct CAN source NAME identifies the bridge on the bus; its visibility in the plotter's target details and alarm engine needs an equipment test. Preserve the true MMSI and vessel name. Keep Internet source labels in the LAN view and use native display support where available.
-
-Live output requires all of the following:
-
-- A healthy, already configured navigation interface at 250 kbit/s and an approved local-AIS receiver identity
-- A unique bridge NAME and reviewed manufacturer/product identifiers, followed by successful address arbitration
-- Verified field mapping and class evidence for every admitted target
-- Proven local-MMSI handover, stale-target expiry and display-source behavior
-- A measured bus budget and an operator control that immediately stops remote transmission
-- Explicit owner approval of the resulting display and alarm behavior
-
-The publisher rechecks target age, lease, own-position validity and local reservations at send time. It flushes queued targets on source failure, moves to a new generation after restart and sends each unchanged observation at most once per session. Prioritize eligible targets by distance, then source age, with bounded fair scheduling. It can send allowlisted AIS reports and the protocol-management messages required for its own identity. Configuration keeps battery, charger, autopilot, route-control and own-GNSS publication outside its authority.
-
-If the display offers insufficient provenance or safe handover, keep remote traffic on the source-aware LAN view or investigate a separate display connection. A certified gateway remains an alternative when production requirements exceed a custom SocketCAN implementation. Open-source availability and standards conformance require separate evidence.
-
-## Hosting and resource isolation
-
-The first build targets the measured Cerbo Python runtime using a small Python package and a separately supervised marine adapter. A full Signal K server can run on the eventual boat server; OTH AIS can publish source-labelled Signal K observations there through an optional adapter.
-
-| Provisional admission budget | Requirement |
+| Field group | Content |
 | --- | --- |
-| Combined process resident memory | At most 64 MiB during the qualification workload |
-| Cerbo available-memory reserve | At least 256 MiB; pause OTH work before crossing the reserve |
-| CPU | Under 5% of one core averaged over 10 minutes, with bounded parsing bursts |
-| Flash writes | Capped configuration/audit writes and rotated logs; target cache in RAM |
-| Charging coexistence | Unchanged controller/watchdog health and telemetry cadence during qualification |
+| Identity | MMSI, source kind, provider/receiver identity and source device NAME where available |
+| Position | Latitude/longitude, SOG, COG, heading and rate of turn, with explicit unknown values |
+| Time | Source position time, UTC receipt time, monotonic receipt time and timestamp semantics |
+| Static data | Name, callsign, vessel type, dimensions and independently timestamped metadata |
+| Class | Verified AIS equipment class or unknown; evidence and chosen output encoding recorded separately |
+| Selection | Selected source, local reservation, target revision, expiry and suppression reason |
 
-These are acceptance targets. Measurements determine admission. The supervisor disables OTH services when budgets are exceeded and preserves the existing electrical services. Use separate process supervision, bounded queues and OS resource controls supported by the actual Venus image. OTH receives neither charging credentials nor D-Bus write permissions. A CAN writer's interface/PGN allowlist provides an application boundary; its strength also depends on the host's process permissions.
+A selected position, motion and time form one observation from one source. Replacing a position with local reception preserves its associated motion and age. Static-field enrichment has separate provenance and timestamps. Missing fields retain their unavailable representation.
 
-When the dedicated server arrives, move fetching, selection and the LAN interface there. Cerbo can retain a small navigation adapter after qualification, connected through mutually authenticated TLS and short-lived output leases. Keep local receiver health and final expiry checks beside the physical CAN interface. Cross-host messages use UTC validity and a bounded receiver-side monotonic lease; monotonic clock values stay local to each host. Only one active publisher owns a bridge identity during migration.
+UTC determines position age. Monotonic clocks govern reservations, timeouts and publication leases. Duplicate snapshots and delayed/out-of-order reports preserve the actual observation time. Clock uncertainty pauses remote output until time becomes trustworthy again. Restarted services require fresh inputs before publication resumes.
 
-## Networks and charts
+## AIS Hub acquisition
 
-The services host belongs on the operations LAN. Raymarine radar/sonar discovery remains within the navigation Ethernet segment. Cameras retain their own planned segment. Inter-segment rules permit explicitly needed crew, application and camera access; multicast forwarding requires a demonstrated use case.
+Use regional HTTPS JSON requests with encoded units, bounded gzip handling and the provider age filter. A single backend owns the account's request schedule, with at least 65 seconds between all requests, including retries. Migration stops the previous account owner before starting the replacement; account-limit state survives normal restart through a small atomic state file.
 
-AIS Hub fetching follows existing WAN/VPN policy. OTH changes neither WAN selection nor routing. NMEA 2000 delivery uses the marine CAN connection. RayNet carries Raymarine's Ethernet data and shares supported instrument data through the designated data-master plotter. Ethernet cabling alone establishes a physical path; each application requires its supported protocol.
+A trusted own-position fix centres moving queries. A fixed, explicit bounding area supports desktop testing while instruments are off. Cross-date-line regions share the same account-wide request budget. Initial selection follows MMSI/source authority; search distance and output-radius filtering are explicit configurable choices.
 
-Raymarine documents `198.18.0.0/21` for its modern private navigation Ethernet network, with a separate reserved self-address range. Its legacy E-Series Classic and Axiom Ethernet-sharing restriction requires a separate legacy segment. Verify the exact E120 generation before changing cabling. Common instrument/AIS access follows each display's supported NMEA connections.
+The [documented provider schema](https://www.aishub.net/api) includes position timestamps and vessel type while leaving equipment class and original radio message ID unspecified. Inspect one actual account response before fixing the normalization contract. Timestamp meaning, coverage and class/raw-data options need recorded evidence.
 
-Offline chart assets remain owned by the chart project. OTH exposes georeferenced, source-labelled traffic so a compatible viewer can overlay it on approved nautical or satellite layers. Provider licensing and LightHouse-native chart admission remain separate qualification steps.
+Secrets stay in a private credential file. Keep TLS certificate verification enabled, validate redirects against approved provider hosts and redact credential-bearing URLs from logs and exceptions. Response limits apply to compressed bytes, decompressed bytes, JSON nesting and record/field counts. Incremental parsing and cooperative processing bound allocation and event-loop stalls.
 
-## Contribution, privacy and connectivity
+## OpenCPN output and encoding
 
-AIS Hub's [sharing workflow](https://www.aishub.net/) supplies a UDP upload destination after station registration. Confirm acceptance of a mobile vessel station, privacy expectations and continued API entitlement with the provider.
+The desktop service provides newline-delimited `!AIVDM` sentences over TCP. The desktop configuration explicitly enables a loopback listener on port 10110; other deployments require their intended bind address and client-access policy. OpenCPN connects as a Network / TCP / NMEA 0183 input. Output from OpenCPN back into this connection remains disabled. A separate authenticated HTTP API exposes source, age and selection details; standard AIS sentences have limited provenance fields.
 
-Prefer genuine received `!AIVDM` sentences from a dedicated receiver-output connection. Confirm Linux USB operation or a receive-only NMEA 0183 connection on the installed receiver. Some equipment multiplexes externally supplied data, so qualify the output's provenance before forwarding. Own-vessel `!AIVDO`, configuration sentences, Internet observations and our gateway output stay excluded from the initial contribution feed.
+Use known Class A/B metadata to choose matching position and static messages. Verify every output through independent fixtures and a decoder, including reserved values, units and multi-sentence grouping. Serve a fresh selected snapshot on client connection, then updates; each target revision replaces its queued predecessor. Slow clients are disconnected before they accumulate old positions.
 
-NMEA 2000-to-0183 reconstruction is a later option requiring provider acceptance and tests for fidelity. Receiver framing, original timestamps and channel details may be lost through conversion. The upload queue drops old records during outages and resumes with current reception. Upload rate and daily byte counters expose its cost; provider-quality requirements determine any permitted sampling.
+Unknown class needs an explicit encoding choice. **Proposed desktop compatibility option:** encode its position as a gateway-generated Class A-format report while retaining `ais_class: unknown` and `encoding_basis: compatibility` internally. This gives OpenCPN the MMSI and position while its equipment-class display reflects our selected format. Operator configuration must explicitly enable this option; seeking provider class evidence remains the preferred path. The same choice requires owner approval and equipment tests before N2K use. Source timestamps and Internet origin remain visible in the API. Native OpenCPN support for NMEA tag-block time/source metadata needs its own test.
 
-Normal, economy and disabled profiles adjust Internet polling and optional contribution independently. Local AIS continues through the existing equipment. At 20 KiB per minute, provider payloads total about 28 MiB/day; at 100 KiB they total about 141 MiB/day. These examples exclude transport overhead. Measure actual downloads and contribution separately before assigning a daily data budget.
+The encoder preserves real MMSIs and names. Unknown radio-state fields use specified unavailable values. Wire encoding never reconstructs a purported original radio report from undocumented fields. Emission is strictly local software/network output; community contribution uses independently received radio sentences.
 
-## Failure behavior and operator view
+See [OpenCPN testing](opencpn-testing.md) for the first working acceptance path.
 
-| Condition | Result |
+## Local AIS coexistence
+
+The [coexistence design](local-ais-coexistence.md) defines transitions and failure cases. Its core rules are:
+
+1. Admit local observations only from approved receiver inputs, excluding own-vessel and gateway-origin reports
+2. Match by MMSI and keep local/provider observations separately
+3. Prefer a genuine local observation regardless of which source arrived later
+4. On local arrival, update the merged OpenCPN view and cancel queued remote position/static output for that MMSI
+5. Hold a local-MMSI reservation through ordinary radio gaps; initial quiet hold is 15 minutes
+6. Release the reservation only after a healthy-input quiet period and a newly obtained, fresh provider position
+7. Recheck local suppression in the CAN adapter immediately before transmitting each message
+
+Local silence, local receiver failure and a healthy receiver with zero targets are separate states. A qualified periodic receiver signal establishes monitoring health. Other instruments' CAN traffic provides bus activity only. Monitoring failure pauses supplemental N2K output globally while the physical receiver path continues independently.
+
+The backend can retain an Internet observation for comparison and diagnostics while local reception owns the selected target. Conflicting local/Internet coordinates trigger a rate-limited discrepancy record; selection continues to follow local authority. Reports already transmitted remain in the client's cache, governed by its replacement and expiry behavior. Actual Axiom/Orca same-MMSI handover and target expiry must be measured.
+
+## NMEA 2000 adapter
+
+The adapter reads the already configured navigation interface and publishes allowlisted AIS reports plus bounded protocol-management messages for its own identity. It maintains a stable, unique device NAME, arbitrates its source address, handles fast packets and rechecks target revision, age, local suppression and lease at send time. It preserves host interface settings and stays isolated from the battery CAN connection.
+
+Known Class A output uses PGN 129038 and supported static PGN 129794. Known Class B uses PGN 129039/129040 as appropriate and supported static PGNs 129809/129810. Missing data uses documented unavailable encodings. Claims of consumption by Axiom+, Orca Core 2 or another device require that device's actual rendering and handover test, recorded separately.
+
+The CAN process receives local reports independently of backend/provider work. It sends a local-seen cancellation to the core and blocks the target locally in the same receive event. Position and static queues share the same suppression rule. Gateway-origin NAME/address observations are excluded from local authority; changes in receiver source address follow its NAME. Passive receive mode opens the decoder/transport path alone. Starting the candidate `N2KDevice` initiates management transmissions, so its active lifecycle belongs exclusively to authorized output mode.
+
+A fresh 15-second lease authorizes bounded remote publication. Lease renewal requires a responsive backend with valid selection state. The adapter continuously enforces local health, own-position and data age. Interface errors, unresolved identity, broken core communication or queue-overload uncertainty stop remote output. CAN sends use short deadlines; accepted frames in the kernel transmit queue are included in the handover-race measurement.
+
+Desktop tests use a virtual CAN interface and an independent decoder. Cerbo tests then verify package startup, reception and measured resource use with transmission disabled. Actual Cerbo transmission, bus coexistence and Axiom/Orca consumption are scheduled for the powered navigation network aboard. Installation success and vCAN encoding establish their own evidence; physical-bus and display results remain separate checks.
+
+## Resource and failure containment
+
+These initial configurable limits are proposals to measure during implementation:
+
+| Resource | Initial bound or behavior |
 | --- | --- |
-| Internet loss, authentication rejection or rate limit | Back off within the account limit; age and expire remote positions; retain local observations |
-| Empty valid regional result | Report query success and zero returned targets |
-| Empty body, malformed schema or response-size limit | Record provider failure, preserve observation timestamps and expire normally |
-| Stale/invalid own position | Freeze the displayed search centre with its age; suspend moving-area queries and CAN publication |
-| Local receiver monitoring failure | Suspend remote CAN publication; identify the missing receiver or input |
-| CAN error state, identity collision or excessive bus load | Stop remote transmission and flush its queue; leave existing interface settings untouched |
-| Core crash, broken adapter link or expired lease | Publisher stops within its lease deadline |
-| Host reboot or storage failure | Start in receive/display mode; qualify time, sources and a fresh generation before optional output |
-| Low memory or electrical-service regression | Stop OTH services and report the resource/coexistence failure |
+| Target state | 2,000 distinct MMSIs across provider records and local reservations; preserve active local suppression on pressure |
+| Pending output | At most one latest revision per target and consumer; hard queue caps |
+| Provider body | 2 MiB compressed / 8 MiB decompressed, bounded nested objects and strings |
+| TCP clients | At most 8; 64 KiB queued per client; disconnect stalled readers |
+| N2K target count | At most 100 eligible remote targets, configured independently of LAN visibility |
+| CAN publication | At most 2 AIS PGNs/second and 20 frames/second, including a bounded management budget |
+| CAN input | Kernel PGN filters and bounded receive batches; incomplete-message count/lifetime caps |
+| Memory | Initial combined soft budget 128 MiB; hard budget 256 MiB; preserve 256 MiB host available-memory reserve |
+| CPU | Low-priority OTH processes; sustained usage above 10% of one core for 60 seconds suspends provider/publication work |
+| Scheduling | HTTP deadlines, bounded parse batches, event-loop-lag monitoring and independent CAN lease |
+| Internet | Account-wide request limit, measured byte counters and configurable daily byte budget |
+| Storage | RAM target state, small atomic configuration/rate-limit records and logs capped at 10 MiB |
+| Recovery | Bounded retry/backoff; configuration/authentication failures wait for correction; crash loops stop with a clear incident |
 
-The operator sees local and Internet target counts, last provider success, position ages, local receiver health, transmitted/suppressed counts, data usage and a concise publication state. An empty provider result represents available data for the query region; actual receiver coverage remains a separate uncertainty.
+Measure imported libraries and maximum-workload allocations before fixing production budgets. Use enforced OS/cgroup limits where supported by the actual Venus image; an external supervisor detects a blocked process. A low-priority/OOM policy should select OTH ahead of electrical services during pressure. Reserve exact host-level changes for deployment approval.
 
-Alerts describe the event and consequence: `Warning: Internet AIS output paused: local receiver data stopped. Last receiver observation: 2 minutes ago.` Recovery notices combine the transition and settled status. Use cooldowns and one recovery message per incident. Routine polling remains in structured logs and counters.
+If local-suppression capacity fills, pause remote publication before evicting evidence needed to protect local vessels. Catch input/decode failures at adapter boundaries; treat invalid records separately from transport loss. Drain/close clients, revoke output leases and stop CAN sending on graceful shutdown. Process death expires output through the adapter lease or stops the adapter itself.
 
-## Approval boundary
+OTH has independent service supervision and receives its own provider credentials. Its authority is AIS observation and approved marine output. Existing battery, charging, autopilot and navigation configuration services retain their current interfaces and settings.
 
-Architecture approval authorizes implementation of the read/display service and offline protocol tests. Installing a boat service, enabling contribution, changing network configuration and transmitting on a live marine bus each require their own explicit approval. The [implementation plan](implementation-plan.md) defines evidence for those decisions.
+## Deployment and migration
+
+| Stage | Host and evidence |
+| --- | --- |
+| First working release | Linux backend serving OpenCPN using real provider data and synthetic/local replays |
+| Protocol verification | The same selections encoded into virtual CAN and independently decoded |
+| Cerbo preparation | Package/runtime startup and resource checks; receive-only operation where navigation data exists |
+| Next boat visit | Healthy powered N2K, supervised write test through Cerbo, Axiom and Orca consumption, local handover and failure checks |
+| Later boat server | Move the same backend; retain a Cerbo CAN adapter with authenticated transport and bounded leases if useful |
+
+On a split-host deployment, the CAN adapter owns final local suppression and receiver-side lease deadlines. Authenticate the transport, bound clock skew and maintain one fetcher and one publisher through migration. Local monotonic clock values remain local to each host.
+
+Raymarine Ethernet, router VLANs, cameras and chart-package admission belong to their own projects. OTH delivery uses the existing LAN and marine interfaces. Vendor statements about display Ethernet networking remain documented support constraints; observed behavior needs a separate equipment test. Those questions stay outside OTH's implementation dependencies.
+
+## Optional community contribution
+
+After consent and provider acceptance of a mobile station, forward genuine received `!AIVDM` sentences to the provider-assigned UDP destination. Qualify the receiver output first: multiplexed external inputs can carry gateway-generated observations. Contribution accepts only trusted radio reception and excludes Internet records, gateway echoes, own-vessel `!AIVDO` and configuration commands. It uses a short bounded queue, discards old backlog on reconnect and reports uploaded bytes.
+
+Contribution is a later adapter unless the account's access terms require an active receiver feed first. Optional Signal K/Home Assistant integration can consume the common API without acquiring another provider poller.
+
+## Operator status and approvals
+
+Expose provider status, last successful request, actual position ages, local receiver state, selected/suppressed counts, active output policy, encoding assumptions and resource/data counters. Report incidents in ordinary English with cause and consequence, then one settled recovery message. Routine polling stays in structured logs.
+
+Design approval begins implementation of the Linux backend, OpenCPN integration and offline N2K tests. Installing a boat service, enabling receiver contribution, changing host/network configuration and transmitting on the live marine bus retain explicit owner approval. Physical write/display tests deferred to the boat visit remain visibly unperformed until observed.

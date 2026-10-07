@@ -1,6 +1,6 @@
 # Architecture
 
-**Revised proposal, October 7, 2026.** One Python backend retrieves Internet AIS, listens to local AIS and selects observations. OpenCPN is the first working client on Linux. A separate output adapter publishes eligible Internet targets through Cerbo's NMEA 2000 connection. Implementation awaits approval.
+**Revised proposal, October 7, 2026.** We will use one Python backend to get Internet AIS, listen to our receiver and choose a position for each vessel. OpenCPN on Linux is our first client. A separate adapter will send additional Internet targets through Cerbo's NMEA 2000 connection. This document describes the planned implementation.
 
 ## Shared backend and two outputs
 
@@ -55,7 +55,7 @@ Python packaging includes dependency hashes and the target-specific wheels neede
 | Time | Source position time, UTC receipt time, monotonic receipt time and timestamp semantics |
 | Static data | Name, callsign, vessel type, dimensions and independently timestamped metadata |
 | Class | Verified AIS equipment class or unknown; evidence and chosen output encoding recorded separately |
-| Selection | Selected source, local reservation, target revision, expiry and suppression reason |
+| Selection | Selected source, last valid local position, five-/nine-minute deadline, receiver condition, target revision and expiry reason |
 
 A selected position, motion and time form one observation from one source. Replacing a position with local reception preserves its associated motion and age. Static-field enrichment has separate provenance and timestamps. Missing fields retain their unavailable representation.
 
@@ -91,11 +91,15 @@ The [coexistence design](local-ais-coexistence.md) defines transitions and failu
 2. Match by MMSI and keep local/provider observations separately
 3. Prefer a genuine local observation regardless of which source arrived later
 4. On local arrival, update the merged OpenCPN view and cancel queued remote position/static output for that MMSI
-5. Hold a local-MMSI reservation through ordinary radio gaps; initial quiet hold is 15 minutes
-6. Release the reservation only after a healthy-input quiet period and a newly obtained, fresh provider position
+5. Keep local position priority for five minutes for moving/unknown vessels, or nine minutes for confirmed anchored/moored vessels
+6. After that window, use a fresh Internet position newer than the last local position; a confirmed receiver failure allows earlier fallback
 7. Recheck local suppression in the CAN adapter immediately before transmitting each message
 
-Local silence, local receiver failure and a healthy receiver with zero targets are separate states. A qualified periodic receiver signal establishes monitoring health. Other instruments' CAN traffic provides bus activity only. Monitoring failure pauses supplemental N2K output globally while the physical receiver path continues independently.
+We track the last valid local position separately from names, class and other metadata. Static reports can improve vessel details while the position timer continues to run. Five and nine minutes are configurable fallback windows. Known anchored/moored status selects nine minutes; moving or uncertain status selects five minutes. Actual radio intervals vary with speed and equipment.
+
+A missed vessel, a failed AIS receiver and a broken monitoring connection are different situations. A confirmed receiver failure permits immediate fresh Internet fallback. When monitoring is unavailable and the receiver's condition is uncertain, existing per-vessel deadlines continue; eligible Internet targets keep being published. Receiver health is reported to the operator and influences source selection. It stays separate from the CAN interface and the adapter's ability to transmit.
+
+The Internet replacement must pass the configured position-age limit and be newer than the last trusted local position. An eligible cached record can be used immediately. If the Internet record is old or missing, retain the previous observation with its actual age until it expires. When local position reception returns, cancel queued Internet reports and select local again. See [coexistence](local-ais-coexistence.md) for receiver-failure and metadata-only cases.
 
 The backend can retain an Internet observation for comparison and diagnostics while local reception owns the selected target. Conflicting local/Internet coordinates trigger a rate-limited discrepancy record; selection continues to follow local authority. Reports already transmitted remain in the client's cache, governed by its replacement and expiry behavior. Actual Axiom/Orca same-MMSI handover and target expiry must be measured.
 
@@ -105,9 +109,9 @@ The adapter reads the already configured navigation interface and publishes allo
 
 Known Class A output uses PGN 129038 and supported static PGN 129794. Known Class B uses PGN 129039/129040 as appropriate and supported static PGNs 129809/129810. Missing data uses documented unavailable encodings. Claims of consumption by Axiom+, Orca Core 2 or another device require that device's actual rendering and handover test, recorded separately.
 
-The CAN process receives local reports independently of backend/provider work. It sends a local-seen cancellation to the core and blocks the target locally in the same receive event. Position and static queues share the same suppression rule. Gateway-origin NAME/address observations are excluded from local authority; changes in receiver source address follow its NAME. Passive receive mode opens the decoder/transport path alone. Starting the candidate `N2KDevice` initiates management transmissions, so its active lifecycle belongs exclusively to authorized output mode.
+The CAN process receives local reports independently of backend/provider work. A valid local position cancels the target's Internet work locally and sends the cancellation to the core in the same receive event. Position and static output queues follow the selected position source. Local metadata updates vessel details while the position deadline keeps running. Gateway-origin NAME/address observations are excluded from local authority; changes in receiver source address follow its NAME. Passive receive mode opens the decoder/transport path alone. Starting the candidate `N2KDevice` initiates management transmissions, so its active lifecycle belongs exclusively to authorized output mode.
 
-A fresh 15-second lease authorizes bounded remote publication. Lease renewal requires a responsive backend with valid selection state. The adapter continuously enforces local health, own-position and data age. Interface errors, unresolved identity, broken core communication or queue-overload uncertainty stop remote output. CAN sends use short deadlines; accepted frames in the kernel transmit queue are included in the handover-race measurement.
+A fresh 15-second lease authorizes bounded remote publication. Lease renewal requires a responsive backend with valid selection state. The adapter checks position age, per-vessel fallback deadlines, receiver condition and the configured geographic area. Monitoring loss permits the defined Internet fallback. Broken CAN transmission, unresolved gateway identity, a broken backend lease, corrupt selection state or queue-overload uncertainty stop marine output. CAN sends use short deadlines; accepted frames in the kernel transmit queue are included in the handover-race measurement.
 
 Desktop tests use a virtual CAN interface and an independent decoder. Cerbo tests then verify package startup, reception and measured resource use with transmission disabled. Actual Cerbo transmission, bus coexistence and Axiom/Orca consumption are scheduled for the powered navigation network aboard. Installation success and vCAN encoding establish their own evidence; physical-bus and display results remain separate checks.
 

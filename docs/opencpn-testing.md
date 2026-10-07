@@ -47,7 +47,10 @@ Use deterministic local-reception replay for software tests while the boat's nav
 | Known Class A/B fixtures | Correct position/static fields and message grouping |
 | Unknown-class option | Explicit chosen wrapper, API class remaining unknown and resulting OpenCPN class display |
 | Local overlap replay | Same MMSI switches to local; later Internet reports stay suppressed |
-| Quiet/release replay | Short gaps preserve local authority; fresh remote output resumes after the hold |
+| Quiet/release replay | Fresh Internet fallback at five minutes for moving/unknown vessels and nine minutes for anchored/moored vessels; valid cached records work immediately |
+| Receiver/monitor outage | Confirmed receiver failure allows immediate eligible fallback; monitoring loss preserves per-vessel timers and Internet tracking |
+| Metadata-only reception | Vessel details update while the last local position keeps aging |
+| Local recovery | Returning local position immediately replaces Internet selection and cancels its queued output |
 | Provider outage/age | Output stops at expiry; measured OpenCPN lost/remove behavior |
 | Client reconnect | Fresh selected snapshot with bounded queue/state |
 | Slow client and oversized response | Resource ceilings and responsive status/local selection |

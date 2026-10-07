@@ -1,10 +1,10 @@
 # OTH AIS (Over-The-Horizon AIS)
 
-Your AIS receiver shows the vessels it can hear over VHF. An Internet connection can give you a wider view: ships approaching from farther away, traffic along your route, and vessels reported by receivers beyond your own range.
+OTH AIS is an intelligent marine data manager designed to bridge the gap between real-time local navigation and long-range situational awareness.
 
-OTH AIS will bring that extra traffic into OpenCPN and onto the boat's NMEA 2000 network. We're building it for S/V Dash, with Raymarine Axiom+ and Orca Core 2 as the first onboard displays to test. The same Python service should work on other Linux-equipped boats.
+AIS receiver on a boat shows the vessels it can hear over VHF. An Internet connection can give you a wider view: ships approaching from farther away, traffic along your route, and vessels reported by receivers beyond your own range. The service exists but usually requires additional hardware equipment and significant monthly subscriptions.
 
-**Status: design proposal, October 7, 2026. Awaits owner approval.**
+OTH AIS brings the extra traffic into LAN and onto the boat's NMEA 2000 network. This way you can consume it with OpenCPN and other networked tools as well as NMEA 2000 and RayMarine SeatalkNG devices. For us, on board S/V Dash, we intend to use it with Raymarine Axiom+, Orca Core 2 and OpenCPN. We are using Python for now to make it cross compatible and be able to be installed on regular machines, Raspberry Pie, and/or Victron Cerbo. of course, with modern tools we can always reimplement it in other more robust languages, like Rust.
 
 ## How it fits aboard
 
@@ -19,35 +19,37 @@ The receiver keeps its direct connection to the boat's instruments. A separate s
 
 Imagine a ship first appears through AIS Hub. Later, your receiver hears it over VHF. Both reports carry the same MMSI, the vessel's AIS identifier. From that moment, local reception takes priority. OpenCPN gets the local observation, and OTH stops sending Internet updates for that ship onto NMEA 2000.
 
-That priority survives normal gaps between radio reports. Anchored or slow-moving vessels can report their position at [three-minute intervals](https://www.navcen.uscg.gov/types-of-ais). The proposed local hold is 15 minutes after the last genuine reception, giving intermittent reception some room. During that hold, the position continues to age. Afterward, Internet tracking can resume when the local receiver is healthy and a fresh provider position is available.
+If we lose the local position reports for that vessel, we still want to know where it is. We will return to the Internet position after five minutes for a moving vessel, or nine minutes for a vessel known to be anchored or moored, assuming we have a fresh Internet position. These are configurable time windows. Actual [radio reporting intervals](https://www.navcen.uscg.gov/types-of-ais) vary with the vessel's speed and AIS equipment. When its movement status is unclear, we use the five-minute window.
 
-If local monitoring fails, supplemental NMEA 2000 output pauses while the physical AIS receiver continues through its existing wiring. The [handover design](docs/local-ais-coexistence.md) covers radio gaps, receiver failures, forwarding loops and updates already in transit.
+If the local AIS receiver fails, we will use fresh Internet positions as soon as they are available. If we lose our monitoring connection and the receiver's condition is uncertain, we will keep the same per-vessel timers and continue Internet tracking as they expire. The service will report the problem and show which source we are using. Fresh local reception takes priority again as soon as it returns.
+
+Each Internet replacement must be within our configured age limit and newer than the last local position. We can use a valid position already in memory. The [handover design](docs/local-ais-coexistence.md) explains the timing, source selection and handling of duplicate reports.
 
 ## When a position gets old
 
-A successful download can contain an old position. We keep the time of the vessel's actual position report and apply freshness limits to that time. A new download or a new vessel name leaves the position's age unchanged.
+A vessel can appear in every Internet download while its position stays the same for hours. We therefore keep the time of its actual position report and check its age before sending it to our displays. Receiving its name, class or other details leaves the position's age unchanged. The five- and nine-minute handover windows follow local position reports for the same reason.
 
-Once the position passes its allowed age, the service stops publishing it. OpenCPN then uses its [lost-target and removal settings](https://opencpn.org/wiki/dokuwiki/doku.php?id=opencpn:manual_advanced:ais). Onboard displays have their own handling, which we'll test alongside the change from Internet to local reception.
+If both sources have lost the vessel and its position has become too old, we will stop sending it to the displays. OpenCPN uses its [lost-target and removal settings](https://opencpn.org/wiki/dokuwiki/doku.php?id=opencpn:manual_advanced:ais). We will check how Axiom and Orca handle this as part of our onboard tests.
 
-Internet coverage and delay depend on the receivers feeding AIS Hub. This wider view helps with advance traffic awareness. Close-quarters decisions continue to use local AIS, radar and lookout.
+Internet coverage depends on the receivers feeding AIS Hub, and their data can arrive with a delay. It gives us a wider view of traffic along our route. When vessels get close, we continue to rely on local AIS, radar and our own lookout.
 
 ## Linux first, then Cerbo
 
-The first release will provide a Linux executable, `oth-ais`, serving AIS directly to OpenCPN over TCP. That lets us develop and use the common backend now, while the boat's navigation equipment is off.
+We will start with a Linux executable, `oth-ais`, that sends AIS to OpenCPN over TCP. We can run it on a regular computer and work with real Internet traffic while the boat's navigation equipment is off. This is also where we will test the change between local and Internet positions.
 
-Cerbo is the planned initial boat host. Its NMEA 2000 adapter will run in a separate process so it can stop output when the backend stalls and check local AIS immediately before sending a target. We'll limit provider requests, target counts, queues, memory and CAN traffic, and measure the workload alongside the electrical services already running there.
+On Dash, we intend to run the service on Cerbo until we have a dedicated boat computer. Cerbo already handles our electrical systems, so we will keep OTH's CPU, memory, Internet use and CAN traffic within configured limits. The NMEA 2000 adapter will run separately and check the selected source just before sending each vessel report. If the main program stalls, that adapter will stop its output.
 
-Package installation and resource checks can happen remotely. Physical CAN transmission, target display and local-source handover will be tested with the navigation equipment powered during the next boat visit. Later, the same backend can move to a dedicated boat computer.
+We can install the package and measure its workload remotely. At the next boat visit, we will turn on the navigation equipment and check that Cerbo can send the data, Axiom and Orca display it, and local AIS takes over when it hears the same vessel. Later, we can move the same backend to our dedicated boat computer.
 
 ## Display compatibility
 
-The output adapters will use standard AIS sentences and NMEA 2000 messages, with established Python libraries for encoding and decoding.
+We will use standard AIS sentences and NMEA 2000 messages, with existing Python libraries to encode and decode them. Other navigation tools should be able to consume the same outputs; we will record which devices and software versions we have actually tested.
 
-AIS Hub's published fields include position, motion and vessel details; equipment class needs further qualification. We'll inspect the actual account response and make any encoding assumption an explicit setting. Axiom and Orca compatibility will be established by sending known reports and checking what each device displays.
+AIS Hub provides position, speed, course and vessel details. We still need to check whether our account provides the AIS equipment class. That affects which message we send. We will make any assumption visible in the settings and test the resulting reports with OpenCPN, Axiom and Orca.
 
 ## Design and development
 
-The repository currently contains the design documents. The executable and deployment package are the next implementation steps.
+For now, this repository contains our design and implementation plan. Next, we will build the Linux service and get it working with OpenCPN, then add and test the NMEA 2000 output.
 
 - [Architecture](docs/architecture.md): the Python modules, data paths and resource limits
 - [Local AIS coexistence](docs/local-ais-coexistence.md): how a vessel changes source and how we avoid duplicate or reflected reports
@@ -57,8 +59,8 @@ The repository currently contains the design documents. The executable and deplo
 
 ## Contributing
 
-The project is MIT-licensed. Contributions from other boat owners and developers are welcome, especially test results from different AIS receivers and displays.
+The project is MIT-licensed. We would welcome other boat owners and developers using it, improving it and sharing results from their AIS receivers and displays.
 
-Keep credentials, real vessel captures and private boat configurations outside the public repository. Use synthetic vessels in shared tests. AIS data access and redistribution follow the provider's terms.
+Credentials and private boat configurations stay outside this repository. For shared tests, we use made-up vessels and positions. Real AIS data remains subject to the provider's access and redistribution terms.
 
-A later, opt-in feature can share genuine local radio reception back to AIS Hub, after confirming the account terms and receiver output. Generated Internet targets stay excluded from that upload.
+We can also give back to the AIS community by sharing the vessels our own receiver hears. That will be optional, after we confirm the account terms and identify a clean receiver feed. Only genuine radio reception will go back to AIS Hub.

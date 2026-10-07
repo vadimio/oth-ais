@@ -1,6 +1,6 @@
 # Implementation plan
 
-**Revised proposal, October 7, 2026; awaiting approval.** Build one Python backend with a Linux executable, prove it with OpenCPN, then deploy the same service to Cerbo and verify physical N2K output aboard.
+**Revised proposal, October 7, 2026; awaiting approval.** We will first get the Python service working with OpenCPN on Linux. Then we will run the same backend on Cerbo, measure its workload and test its NMEA 2000 output with the navigation equipment turned on aboard.
 
 ## Deliverables and order
 
@@ -24,7 +24,7 @@ Implement:
 
 - Regional requests and a restart-aware, account-wide minimum polling interval
 - Bounded compressed/decompressed parsing, field counts and allocations
-- Separate local/provider observations, expiry, target revisions and local-MMSI reservations
+- Separate local/provider observations, position expiry, target revisions and five-/nine-minute local fallback windows
 - An authenticated target/status API exposing selected source, age and suppression reasons
 - Normal/economy/disabled controls with measured data counters
 - Graceful cancellation, retry/backoff, incident logs and observable resource limits
@@ -43,11 +43,12 @@ Verify in actual OpenCPN:
 
 1. Real Internet targets appear at the provider coordinates with correct speed/course and available static fields
 2. A synthetic local replay for the same MMSI replaces the Internet-selected observation
-3. Subsequent Internet updates leave the locally selected position unchanged
-4. Quiet-period release uses a newly fetched fresh provider position
+3. Internet updates during the local position window leave the locally selected position unchanged
+4. Five-/nine-minute silence selects a fresh Internet position, including an eligible cached record; confirmed receiver failure permits earlier fallback
 5. Provider outage/expiry stops output, with OpenCPN's lost/remove behavior measured
 6. Slow/disconnected clients recover through fresh snapshots and bounded memory
 7. Unknown-class compatibility encoding and any supported source/time tag blocks have their display consequences recorded
+8. Monitoring loss allows timed Internet fallback; metadata-only local updates leave the position timer running; returning local positions take over immediately
 
 Synthetic replay reaches only the local desktop connection or virtual CAN test network. Keep OpenCPN route/autopilot output disabled on this connection.
 
@@ -67,7 +68,7 @@ Virtual-CAN tests cover:
 4. Same-MMSI local arrival cancelling both remote position and static queues
 5. Local arrival during backlog or a multi-frame send, with the residual in-flight bound recorded
 6. Gateway echoes, multiplexed inputs, own-vessel reports and conflicting data
-7. Expiry, clock uncertainty, local-monitor loss, GPS loss and broken backend lease
+7. Position expiry, five-/nine-minute boundary cases, receiver failure, monitoring loss, GPS loss and broken backend lease; Internet fallback continues through local-input failure while CAN/lease failures stop marine output
 8. Queue saturation, suppression-state saturation, CPU/RAM pressure and crash loops
 9. Restart, missing state storage and overlapping-process identity/account locks
 10. Interface/PGN restrictions preserving BMS, charging and autopilot behavior
@@ -95,7 +96,8 @@ Use one supervised session with the following distinct observations:
 | Passive startup | Approved AIS receiver identity and real local targets; trusted own-position and healthy electrical services |
 | Controlled write through Cerbo | Actual AIS frames reach the physical N2K bus from the intended adapter identity |
 | Axiom+ and Orca | Each device displays expected MMSI/position/static fields; source/age/encoding behavior recorded separately |
-| Local handover | A real locally received MMSI owns the native path and ceases supplemental publication |
+| Local handover | Fresh local position stops supplemental publication; five-/nine-minute silence or confirmed receiver failure allows a newer, fresh Internet position; returning local reception takes over |
+| Receiver and monitor failure | Fresh Internet tracking continues under the fallback rules, with source/fault status shown to the operator |
 | Outage and expiry | Remote output stops and each display's cached-target behavior is measured |
 | Backend/adapter failure | Publication stops within the lease/send bound while native AIS continues |
 | Restart and recovery | Fresh source/time state precedes output; address/account ownership remains unique |

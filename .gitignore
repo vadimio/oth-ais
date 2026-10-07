@@ -1,0 +1,21 @@
+# Private deployment data
+.env
+.env.*
+!.env.example
+credentials*
+creds.json
+private/
+captures/
+config.local.*
+
+# Runtime and tooling
+__pycache__/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+*.log
+*.sqlite*
